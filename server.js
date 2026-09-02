@@ -1,6 +1,8 @@
 const express = require('express');
 const cors = require('cors')
 const jwt = require('jsonwebtoken');
+const path = require('path');
+const multer = require('multer');
 const app = express();
 
 const bcrypt = require('bcrypt');
@@ -9,6 +11,20 @@ const saltRounds = 10;
 const mysql = require('mysql2');
 const authJWT = require('./middleware');
 app.use(cors())
+
+app.use('/uploads', express.static(path.join(process.cwd(), 'uploads')));
+
+const storage = multer.diskStorage({
+    destination: (req, file, cb) => {
+        cb(null, 'uploads/');
+    },
+    filename: (req, file, cb) => {
+        const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1e9);
+        cb(null, uniqueSuffix + '-' + file.originalname);
+    },
+});
+
+const uploads = multer({ storage: storage });
 
 const db = mysql.createConnection({
     host: 'localhost',
@@ -61,24 +77,42 @@ app.get('/kategori', (req, res) => {
 });
 
 //--------------------- POST PRODUK -------------------------------//
-app.post('/produk', authJWT, (req, res) => {
+app.post('/produk', authJWT, uploads.single('file'), (req, res) => {
     const { judul, deskripsi, harga, id_kategori } = req.body;
+    const nama_file = req.file ? req.file.filename : null;
 
-    if (!deskripsi) {
-        return res.status(400).json({ message: ' deskripsi wajib diisi' });
+    if (!judul || !harga) {
+        return res.status(400).json({ message: 'Judul dan harga wajib diisi' });
     }
 
-    const sql = 'INSERT INTO produk (judul, deskripsi, harga, id_kategori, tgl_input) VALUES (?, ?, ?, ?, NOW())';
-    db.query(sql, [judul, deskripsi, harga, id_kategori], (err, result) => {
-        if (err) return res.status(500).json({ error: err.sqlMessage });
-        res.json({
-            message: 'Produk berhasil ditambahkan!',
-            id_produk: result.insertId
-        });
+    const sql = `
+        INSERT INTO produk
+        (judul, deskripsi, harga, id_kategori, nama_file, tgl_input)
+        VALUES (?, ?, ?, ?, ?, NOW())
+    `;
+
+    db.query(
+        sql,
+        [judul, deskripsi, harga, id_kategori, nama_file],
+        (err, result) => {
+            if (err) {
+                return res.status(500).json({
+                    error: err.sqlMessage
+                });
+            }
+
+            res.json({
+                    message: 'Produk berhasil ditambahkan!',
+                    id_produk: result.insertId
+                });
+            }
+        );
+       
     });
-});
+//--------------------------ISI POST PRODUK----------------------------//
+
 //-------------------------- PUT PRODUK -------------------------------//
-app.put('/produk/:id_produk', authJWT, (req, res) => {
+app.put('/produk/:id_produk', authJWT, uploads.single('file'),(req, res) => {
     const { id_produk } = req.params;
     const { judul, deskripsi, harga, id_kategori } = req.body;
 
@@ -86,17 +120,43 @@ app.put('/produk/:id_produk', authJWT, (req, res) => {
         return res.status(400).json({ message: 'Judul dan harga wajib diisi' });
     }
 
-    const sql = 'UPDATE produk SET judul=?, deskripsi=?, harga=?, id_kategori=? WHERE id_produk=?';
-    db.query(sql, [judul, deskripsi, harga, id_kategori, id_produk], (err, result) =>{
+    //Ambil nama file lama
+    const cekSql = 'SELECT nama_file FROM produk WHERE id_produk =?';
+
+    db.query(cekSql, [id_produk], (err, result) =>{
         if (err) return res.status(500).json({ error: err.sqlMessage });
 
-        // cek apakah ada data yang berubah //
-        if (result.affectedRows === 0) {
-            return res.status(400).json({ message: 'Produk tidak ditemukan' });
+        if (result.length === 0) {
+            return res.status(404).json({ message: 'Produk tidak ditemukan' });
         }
-        res.json({ message: 'Produk berhasil di update! '})
+
+        //Jika ada file baru, pakai file baru. Kalau tidak, pakai file lama
+        const nama_file = req.file ? req.file.filename : result[0].nama_file;
+
+        const updateSql = `
+            UPDATE produk
+            SET judul=?, deskripsi=?, harga=?, id_kategori=?, nama_file=?
+            WHERE id_produk=?
+        `;
+
+        db.query(
+            updateSql,
+            [judul, deskripsi, harga, id_kategori, nama_file, id_produk],
+            (err, UdateResult) => {
+                if (err) {
+                    return res.status(500).json({
+                        error: err.sqlMessage
+                    });
+                }
+
+                res.json({
+                    message: 'Produk berhasil diupdate!'
+                });
+            }
+        );
     });
 });
+//------------------------------SELESAI PUT PRODUK-----------------------------//
 
 ///======= DELETE PRODUK =========////
 app.delete('/produk/:id_produk', authJWT, (req, res) => {
